@@ -8,7 +8,7 @@ The cindex2ctypes is a project to generate python bindings for C code using clan
 `sudo apt install -y clang-16 python3-clang-16`
 
 **Python**
-`pip install -r requirements.txt`
+`sudo pip install -r requirements.txt`
 
 # Demonstration
 
