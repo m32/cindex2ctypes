@@ -1,0 +1,5 @@
+{
+    "name": "demo",
+    "dll": "./democ.so",
+    "parse": "./democ.h"
+}
