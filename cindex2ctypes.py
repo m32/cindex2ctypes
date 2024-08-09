@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env vpython3
 import sys
 import json
 import clang.cindex
@@ -13,12 +13,102 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M",
 )
 
+class CTEnum:
+    def __init__(self, name):
+        self.name = name
+        self.children = []
+    def add(self, name, value):
+        elem = (name, value)
+        self.children.append(elem)
+    def write(self, fp):
+        fp.write(f"""\
+class {self.name}:
+""")
+        for name, value in self.children:
+            fp.write(f"""\
+    {name} = {value}
+""")
+        fp.write('\n')
+
+class CTUnionStruct:
+    def __init__(self, name, align, size):
+        self.name = name
+        self.align = align
+        self.size = size
+        self.children = []
+        self.hasforward = False
+
+    def add(self, name, value):
+        elem = (name, value)
+        self.children.append(elem)
+
+    def write(self, fp, base):
+        if not self.children:
+            fp.write(f"""
+class {self.name}({base}):
+    _align_ = {self.align}
+
+""")
+            return
+        if self.hasforward:
+            fp.write(f"""
+{self.name}._fields_ = [
+""")
+        else:
+            fp.write(f"""
+class {self.name}({base}):
+    _align_ = {self.align}
+    _fields_ = [
+""")
+        for name, value in self.children:
+            fp.write(f"""\
+        ("{name}", {value}),
+""")
+        fp.write(f"""\
+    ]
+assert sizeof({self.name}) == {self.size}
+
+""")
+
+class CTUnion(CTUnionStruct):
+    def write(self, fp):
+        super().write(fp, "Union")
+
+class CTStructure(CTUnionStruct):
+    def write(self, fp):
+        super().write(fp, "Structure")
+
+class CTFunction:
+    def __init__(self, name, type, argtypes, argnames):
+        self.name = name
+        self.type = type
+        self.argtypes = argtypes
+        self.argnames = argnames
+
+    def write(self, fp):
+        fp.write(f"""\
+        self.{self.name} = CFUNCTYPE({self.type}{self.argtypes})(("{self.name}", hdll))
+""")
+        if 0:
+            print("@CFUNCTYPE(%s%s)"%(resulttype, argtypes))
+            print("def %s(%s):"%(funcname, argnames))
+            print("    %s._api_(%s)"%(funcname, argnames))
+
+class CTTypedef:
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+    def write(self, fp):
+        fp.write(f"""\
+{self.name} = {self.value}
+""")
+
 def main():
     with open(f"{sys.argv[1]}.json", "rt") as fp:
         config = json.load(fp)
-    print(config)
     cls = Clang2ctypes()
-    cls.parse_file(config["parse"], [])
+    cls.parse_file(config["parse"], config["parseargs"])
     if cls.errors or cls.fatals:
         return
     cls.visitor()
@@ -36,43 +126,17 @@ from ctypes import (
 )
 """)
         fp.write("\n")
-        for struct in cls.enums:
-            fp.write(struct[0])
-            fp.write("\n")
-            for i in range(1, len(struct)):
-                fp.write("    ")
-                fp.write(struct[i])
-                fp.write("\n")
-            fp.write("\n")
-        for struct in cls.structs:
-            name, align, size, txt = struct[0]
-            fp.write("""
-%s
-    _align_ = %s
-    _fields_ = [
-"""%(txt, align))
-            for i in range(1, len(struct)):
-                fp.write("        ")
-                fp.write(struct[i])
-                fp.write(",\n")
-            fp.write("""\
-    ]
-assert sizeof(%s) == %s
-"""%(name, size))
+        for elem in cls.elements:
+            if not isinstance(elem, CTFunction):
+                elem.write(fp)
         fp.write("""
 class Demo:
-    def __init__(self):
-        hdll = self.hdll = CDLL("%s")
-"""%config["dll"])
-        for funcname, resulttype, argtypes, argnames in cls.functions:
-            fp.write("        self.%s = CFUNCTYPE(%s%s)((\"%s\", hdll))"%(
-                funcname, resulttype, argtypes, funcname
-            ))
-            fp.write("\n")
-            if 0:
-                print("@CFUNCTYPE(%s%s)"%(resulttype, argtypes))
-                print("def %s(%s):"%(funcname, argnames))
-                print("    %s._api_(%s)"%(funcname, argnames))
+    def __init__(self, path):
+        hdll = self.hdll = CDLL(path)
+""")
+        for elem in cls.elements:
+            if isinstance(elem, CTFunction):
+                elem.write(fp)
 
 severity2text = {
     Diagnostic.Ignored: "",
@@ -92,9 +156,7 @@ class Clang2ctypes:
         self.errors = 0
         self.fatals = 0
         self.total_elements = 0
-        self.functions = []
-        self.structs = []
-        self.enums = []
+        self.elements = []
 
     def parse_file(self, src, args):
         self.source_path = src
@@ -152,19 +214,19 @@ class Clang2ctypes:
             self.visitor(cursor=children)
 
     def visit_ENUM_DECL(self, cursor):
-        elem = [
-            "class %s: # enum"%cursor.spelling,
-        ]
+        elem = CTEnum(cursor.spelling)
         for cc in cursor.get_children():
             if cc.kind == CursorKind.ENUM_CONSTANT_DECL:
-                elem.append("%s = %s"%(cc.displayname, cc.enum_value))
+                elem.add(cc.displayname, cc.enum_value)
             else:
                 print("enum?", cc.displayname, cc.kind, "=", cc.enum_value)
                 assert False
-        self.enums.append(elem)
+        self.elements.append(elem)
         return True
 
     def type2ctypes(self, t):
+        if t.kind == TypeKind.ELABORATED:
+            return t.get_declaration().spelling
         if t.kind == TypeKind.RECORD:
             return t.get_declaration().spelling
         if t.kind == TypeKind.POINTER:
@@ -219,11 +281,7 @@ class Clang2ctypes:
         print("unhandled type", t.get_canonical().kind)
         assert False
 
-    def UnionStruct(self, base, cursor):
-        elem = [(
-            cursor.spelling, cursor.type.get_align(), cursor.type.get_size(),
-            f"class {cursor.spelling}({base}):"
-        )]
+    def UnionStruct(self, elem, cursor):
         for cc in cursor.get_children():
             assert cc.kind == CursorKind.FIELD_DECL
             field_name = cc.spelling
@@ -231,24 +289,34 @@ class Clang2ctypes:
             if t.kind == TypeKind.POINTER:
                 ti = t.get_pointee().get_canonical()
                 if ti.kind == TypeKind.RECORD:
-                    elem.append("(\"%s\", %s)"%(field_name, self.type2ctypes(t)))
+                    elem.add(field_name, self.type2ctypes(t))
                 elif ti.kind == TypeKind.FUNCTIONPROTO:
-                    elem.append("(\"%s\", %s)"%(field_name, self.type2ctypes(t)))
+                    elem.add(field_name, self.type2ctypes(t))
                     #t.spelling
                 else:
-                    elem.append("(\"%s\", %s)"%(field_name, self.type2ctypes(t)))
+                    elem.add(field_name, self.type2ctypes(t))
             elif t.kind == TypeKind.CONSTANTARRAY:
-                elem.append("(\"%s\", %s)"%(field_name, self.type2ctypes(t)))
+                elem.add(field_name, self.type2ctypes(t))
             else:
-                elem.append("(\"%s\", %s)"%(field_name, self.type2ctypes(cc.type)))
-        self.structs.append(elem)
+                elem.add(field_name, self.type2ctypes(t))
+        self.elements.append(elem)
 
     def visit_UNION_DECL(self, cursor):
-        self.UnionStruct("Union", cursor)
+        elem = CTUnion(cursor.spelling, cursor.type.get_align(), cursor.type.get_size())
+        self.UnionStruct(elem, cursor)
+        for i in range(len(self.elements)-1):
+            if isinstance(elem, CTUnion) and self.elements[i].name == elem.name:
+                elem.hasforward = 1
+                break
         return True
 
     def visit_STRUCT_DECL(self, cursor):
-        self.UnionStruct("Structure", cursor)
+        elem = CTStructure(cursor.spelling, cursor.type.get_align(), cursor.type.get_size())
+        self.UnionStruct(elem, cursor)
+        for i in range(len(self.elements)-1):
+            if isinstance(elem, CTStructure) and self.elements[i].name == elem.name:
+                elem.hasforward = 1
+                break
         return True
 
     def visit_MACRO_DEFINITION(self, cursor):
@@ -274,16 +342,28 @@ class Clang2ctypes:
         if argtypes:
             argtypes = ", "+argtypes
         result = cursor.result_type.get_canonical()
-        self.functions.append((
+        elem = CTFunction(
             cursor.spelling,
             self.type2ctypes(result),
             argtypes,
             argnames,
-        ))
+        )
+        self.elements.append(elem)
         return True
 
     def visit_TYPEDEF_DECL(self, cursor):
-        #print("typedef", cursor.spelling)
+        field_name = cursor.spelling
+        t = cursor.type
+        if t.get_canonical().kind == TypeKind.RECORD:
+            ti = t.get_canonical()
+            td = self.type2ctypes(ti)
+        elif t.get_canonical().kind == TypeKind.POINTER:
+            ti = t.get_canonical()
+            td = self.type2ctypes(ti)
+        else:
+            td = self.type2ctypes(t)
+        elem = CTTypedef(field_name, td)
+        self.elements.append(elem)
         return True
 
 main()

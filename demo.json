@@ -1,5 +1,5 @@
 {
     "name": "demo",
-    "dll": "./democ.so",
-    "parse": "./democ.h"
+    "parse": "./democ.h",
+    "parseargs": []
 }

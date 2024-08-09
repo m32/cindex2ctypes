@@ -5,7 +5,7 @@ def cb(a, b):
     print(f'cb called with: 0x{a:x}, {b.contents}')
     return 0x1234
 
-cls = demo.Demo()
+cls = demo.Demo("./democ.so")
 pt = demo.my_point()
 pt.x = 0x123456789abcef0
 pt.x1 = None
