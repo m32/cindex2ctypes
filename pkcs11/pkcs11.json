@@ -1,0 +1,8 @@
+{
+    "name": "pkcs11py",
+    "parse": "./pkcs11.h",
+    "parseargs": [
+        "-DCRYPTOKI_GNU",
+        "-I/usr/include"
+    ]
+}
