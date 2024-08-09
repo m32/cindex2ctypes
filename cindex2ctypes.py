@@ -321,6 +321,19 @@ class Clang2ctypes:
 
     def visit_MACRO_DEFINITION(self, cursor):
         return True
+        if not cursor.location.file or cursor.location.file.name != './x.h':
+            return
+        def slc(e):
+            return (e.file.name, e.line, e.column)
+        print(
+            cursor.displayname, #cursor.spelling,
+            #cursor.data,
+            slc(cursor.extent.start), slc(cursor.extent.end)
+        )
+        tokens = list(cursor.get_tokens())
+        s = ' '.join([str(t.spelling) for t in tokens])
+        print(len(tokens), s)
+        return False
 
     def visit_MACRO_INSTANTIATION(self, cursor):
         return True
@@ -354,11 +367,13 @@ class Clang2ctypes:
     def visit_TYPEDEF_DECL(self, cursor):
         field_name = cursor.spelling
         t = cursor.type
-        if t.get_canonical().kind == TypeKind.RECORD:
+        ti = t.get_canonical()
+        if ti.kind == TypeKind.RECORD:
+            td = self.type2ctypes(ti)
+        elif ti.kind == TypeKind.POINTER:
             ti = t.get_canonical()
             td = self.type2ctypes(ti)
-        elif t.get_canonical().kind == TypeKind.POINTER:
-            ti = t.get_canonical()
+        elif ti.kind == TypeKind.CONSTANTARRAY:
             td = self.type2ctypes(ti)
         else:
             td = self.type2ctypes(t)
