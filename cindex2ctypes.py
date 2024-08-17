@@ -24,6 +24,8 @@ class CTEnum:
         fp.write(f"""
 class {self.name}(c_int):
 """)
+        self.writechildren()
+    def writechildren(self, fp):
         for name, value in self.children:
             fp.write(f"""\
     {name} = {value}
@@ -129,13 +131,34 @@ int8_t = c_int8
 int16_t = c_int16
 int32_t = c_int32
 int64_t = c_int64
+uint8_t = c_uint8
+uint16_t = c_uint16
+uint32_t = c_uint32
+uint64_t = c_uint64
 
 size_t = c_size_t
 """)
         fp.write("\n")
-        for elem in cls.elements:
-            if isinstance(elem, CTEnum):
-                elem.write(fp)
+        noenumclass = config.get("noenumclass", False)
+        if noenumclass:
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    fp.write(f"""\
+{elem.name} = c_int32
+""")
+            fp.write("""
+if 1:
+""")
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    fp.write(f"""\
+    # {elem.name}
+""")
+                    elem.writechildren(fp)
+        else:
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    elem.write(fp)
 
         for elem in cls.elements:
             if not isinstance(elem, CTFunction) and not isinstance(elem, CTEnum):
