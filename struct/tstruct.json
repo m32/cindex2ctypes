@@ -1,10 +1,10 @@
 {
-    "filename": "demo",
+    "filename": "tstruct",
     "classname": "Demo",
-    "parsesrc": "./democ.h",
+    "parsesrc": "./tstruct.h",
     "parseargs": [
     ],
     "parseinclude": [
-        "./democ.h"
+        "./tstruct.h"
     ]
 }

@@ -1,10 +1,10 @@
 {
-    "filename": "demo",
+    "filename": "macro",
     "classname": "Demo",
-    "parsesrc": "./democ.h",
+    "parsesrc": "./macro.h",
     "parseargs": [
     ],
     "parseinclude": [
-        "./democ.h"
+        "./macro.h"
     ]
 }

@@ -1,5 +1,6 @@
 {
-    "name": "pkcs11py",
+    "filename": "pkcs11py",
+    "classname": "PKCS11PY",
     "parse": "./pkcs11.h",
     "parseargs": [
         "-DCRYPTOKI_GNU",

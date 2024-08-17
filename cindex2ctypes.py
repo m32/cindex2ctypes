@@ -1,9 +1,9 @@
 #!/usr/bin/env vpython3
 import sys
 import json
+import logging
 import clang.cindex
 from clang.cindex import Diagnostic, CursorKind, TokenKind, TranslationUnit, TypeKind
-import logging
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -21,14 +21,13 @@ class CTEnum:
         elem = (name, value)
         self.children.append(elem)
     def write(self, fp):
-        fp.write(f"""\
-class {self.name}:
+        fp.write(f"""
+class {self.name}(c_int):
 """)
         for name, value in self.children:
             fp.write(f"""\
     {name} = {value}
 """)
-        fp.write('\n')
 
 class CTUnionStruct:
     def __init__(self, name, align, size):
@@ -46,18 +45,18 @@ class CTUnionStruct:
         if not self.children:
             fp.write(f"""
 class {self.name}({base}):
-    _align_ = {self.align}
-
+    pass
 """)
             return
         if self.hasforward:
             fp.write(f"""
+{self.name}._pack_ = {self.align}
 {self.name}._fields_ = [
 """)
         else:
             fp.write(f"""
 class {self.name}({base}):
-    _align_ = {self.align}
+    _pack_ = {self.align}
     _fields_ = [
 """)
         for name, value in self.children:
@@ -67,7 +66,6 @@ class {self.name}({base}):
         fp.write(f"""\
     ]
 assert sizeof({self.name}) == {self.size}
-
 """)
 
 class CTUnion(CTUnionStruct):
@@ -100,7 +98,8 @@ class CTTypedef:
         self.value = value
 
     def write(self, fp):
-        fp.write(f"""\
+        if self.name != self.value:
+            fp.write(f"""
 {self.name} = {self.value}
 """)
 
@@ -108,15 +107,16 @@ def main():
     with open(f"{sys.argv[1]}.json", "rt") as fp:
         config = json.load(fp)
     cls = Clang2ctypes()
-    cls.parse_file(config["parse"], config["parseargs"])
+    cls.parse_file(config)
     if cls.errors or cls.fatals:
         return
     cls.visitor()
-    with open(f"{config['name']}.py", "wt") as fp:
+    with open(f"{config['filename']}.py", "wt") as fp:
         fp.write("""\
 from ctypes import (
     CDLL, CFUNCTYPE, POINTER,
     Union, Structure, sizeof,
+    c_size_t, c_int,
     c_int8, c_uint8,
     c_int16, c_uint16,
     c_int32, c_uint32,
@@ -124,13 +124,24 @@ from ctypes import (
     c_int64, c_uint64,
     c_float, c_double
 )
+
+int8_t = c_int8
+int16_t = c_int16
+int32_t = c_int32
+int64_t = c_int64
+
+size_t = c_size_t
 """)
         fp.write("\n")
         for elem in cls.elements:
-            if not isinstance(elem, CTFunction):
+            if isinstance(elem, CTEnum):
                 elem.write(fp)
-        fp.write("""
-class Demo:
+
+        for elem in cls.elements:
+            if not isinstance(elem, CTFunction) and not isinstance(elem, CTEnum):
+                elem.write(fp)
+        fp.write(f"""
+class {config['classname']}:
     def __init__(self, path):
         hdll = self.hdll = CDLL(path)
 """)
@@ -157,8 +168,12 @@ class Clang2ctypes:
         self.fatals = 0
         self.total_elements = 0
         self.elements = []
+        self.config = None
 
-    def parse_file(self, src, args):
+    def parse_file(self, config):
+        self.config = config
+        src = config["parsesrc"]
+        args = config["parseargs"]
         self.source_path = src
         self.index = clang.cindex.Index.create()
         self.tu = self.index.parse(path=src, args=args, options=TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD|TranslationUnit.PARSE_SKIP_FUNCTION_BODIES)
@@ -173,7 +188,10 @@ class Clang2ctypes:
 
             logger.debug("%s:%d,%d: %s: %s" % (diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling))
 
-    def parse_buffer(self, src, buf, args):
+    def parse_buffer(self, config, buf):
+        self.config = config
+        src = config["parsesrc"]
+        args = config["parseargs"]
         self.source_path = src
         self.index = clang.cindex.Index.create()
         self.tu = self.index.parse(path=src, args=args, unsaved_files=[(src, buf)])
@@ -188,11 +206,43 @@ class Clang2ctypes:
 
             logger.debug("%s:%d,%d: %s: %s" % (diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling))
 
+    def debugCursor(self, cursor, n=1):
+        logger.debug('%scursor: spelling: %s kind:%s type.kind:%s', ' '*n,
+            cursor.spelling, 
+            cursor.kind.name,
+            cursor.type.kind.name)
+        for child in cursor.get_children():
+            self.debugCursor(child, n+1)
+        return
+
+        for token in cursor.get_tokens():
+            logger.debug('token.spelling: %s', token.spelling)
+            logger.debug('token.kind: %s', token.kind.name)
+            #logger.debug('token.type.kind: %s', token.type.kind.name)
+
+    def checkparseinclude(self, cursor):
+        if cursor.location.file and cursor.location.file.name not in self.config["parseinclude"]:
+            #logger.debug("skip file:%s" % cursor.location.file)
+            return False
+        return True
+
+    def getName(self, elem):
+        field_name = elem.spelling
+        if field_name.find('(') > 0:
+            field_name = 'unnamed_%s'%elem.hash
+        return field_name
+
     def visitor(self, cursor=None):
         if cursor is None:
             cursor = self.tu.cursor
 
+        if not self.checkparseinclude(cursor):
+            return
+
         for children in cursor.get_children():
+            if not self.checkparseinclude(children):
+                continue
+
             self.total_elements += 1
 
             # Check if a visit_EXPR_TYPE member exists in the given object and call it
@@ -201,9 +251,16 @@ class Clang2ctypes:
             element = kind_name[kind_name.find(".")+1:]
             method_name = "visit_%s" % element
             func = getattr(self, method_name, None)
-            if func and func(children):
+            try:
+                if func and func(children):
+                    continue
+            except:
+                filename = 'unknown'
+                if children.location.file and children.location.file.name:
+                    filename = children.location.file.name
+                logger.exception('unhandled in %s', filename)
+                self.debugCursor(children)
                 continue
-
             # Same as before but we pass to the member any literal expression.
             #method_name = "visit_LITERAL"
             #if children.kind >= CursorKind.INTEGER_LITERAL and children.kind <= CursorKind.STRING_LITERAL:
@@ -226,9 +283,9 @@ class Clang2ctypes:
 
     def type2ctypes(self, t):
         if t.kind == TypeKind.ELABORATED:
-            return t.get_declaration().spelling
+            return self.getName(t.get_declaration())
         if t.kind == TypeKind.RECORD:
-            return t.get_declaration().spelling
+            return self.getName(t.get_declaration())
         if t.kind == TypeKind.POINTER:
             ti = t.get_pointee().get_canonical()
             if ti.kind == TypeKind.RECORD:
@@ -243,6 +300,8 @@ class Clang2ctypes:
                 if argtypes:
                     argtypes = ", "+argtypes
                 return "CFUNCTYPE(%s%s)"%(self.type2ctypes(ti.get_result()), argtypes)
+            elif ti.kind == TypeKind.FUNCTIONNOPROTO:
+                return "CFUNCTYPE(%s)"%(self.type2ctypes(ti.get_result()))
             # simple type
             return "POINTER(%s)"%self.type2ctypes(ti)
         elif t.kind == TypeKind.CONSTANTARRAY:
@@ -256,6 +315,8 @@ class Clang2ctypes:
                 return "c_int8"
             case TypeKind.UCHAR:
                 return "c_uint8"
+            case TypeKind.SCHAR:
+                return "c_int8"
             case TypeKind.SHORT:
                 return "c_int16"
             case TypeKind.USHORT:
@@ -278,11 +339,20 @@ class Clang2ctypes:
                 return "c_double"
             case TypeKind.VOID:
                 return "None"
+            case TypeKind.ENUM:
+                return 'c_int32'
         print("unhandled type", t.get_canonical().kind)
         assert False
 
     def UnionStruct(self, elem, cursor):
         for cc in cursor.get_children():
+            if cc.kind == CursorKind.UNION_DECL:
+                #self.debugCursor(cc)
+                self.visit_UNION_DECL(cc)
+                continue
+            elif cc.kind == CursorKind.STRUCT_DECL:
+                self.visit_STRUCT_DECL(cc)
+                continue
             assert cc.kind == CursorKind.FIELD_DECL
             field_name = cc.spelling
             t = cc.type
@@ -302,7 +372,10 @@ class Clang2ctypes:
         self.elements.append(elem)
 
     def visit_UNION_DECL(self, cursor):
-        elem = CTUnion(cursor.spelling, cursor.type.get_align(), cursor.type.get_size())
+        field_name = cursor.spelling
+        if field_name.find('(') > 0:
+            field_name = 'unnamed_%s'%cursor.hash
+        elem = CTUnion(field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
             if isinstance(elem, CTUnion) and self.elements[i].name == elem.name:
@@ -311,7 +384,10 @@ class Clang2ctypes:
         return True
 
     def visit_STRUCT_DECL(self, cursor):
-        elem = CTStructure(cursor.spelling, cursor.type.get_align(), cursor.type.get_size())
+        field_name = cursor.spelling
+        if field_name.find('(') > 0:
+            field_name = 'unnamed_%s'%cursor.hash
+        elem = CTStructure(field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
             if isinstance(elem, CTStructure) and self.elements[i].name == elem.name:
@@ -321,12 +397,11 @@ class Clang2ctypes:
 
     def visit_MACRO_DEFINITION(self, cursor):
         return True
-        if not cursor.location.file or cursor.location.file.name != './x.h':
-            return
+        self.debugCursor(cursor)
         def slc(e):
             return (e.file.name, e.line, e.column)
         print(
-            cursor.displayname, #cursor.spelling,
+            'MACRO_DEFINITION', cursor.displayname, #cursor.spelling,
             #cursor.data,
             slc(cursor.extent.start), slc(cursor.extent.end)
         )
@@ -337,6 +412,18 @@ class Clang2ctypes:
 
     def visit_MACRO_INSTANTIATION(self, cursor):
         return True
+        self.debugCursor(cursor)
+        def slc(e):
+            return (e.file.name, e.line, e.column)
+        print(
+            'MACRO_INSTANTIATION', cursor.displayname, #cursor.spelling,
+            #cursor.data,
+            slc(cursor.extent.start), slc(cursor.extent.end)
+        )
+        tokens = list(cursor.get_tokens())
+        s = ' '.join([str(t.spelling) for t in tokens])
+        print(len(tokens), s)
+        return False
 
     def visit_VAR_DECL(self, cursor):
         return True
