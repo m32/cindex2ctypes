@@ -6,5 +6,8 @@
     ],
     "parseinclude": [
         "./democ.h"
-    ]
+    ],
+    "noenumclass": true,
+    "functions_decorated": true,
+    "end": 1
 }

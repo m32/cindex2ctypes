@@ -1,1 +1,1 @@
-libclang==18.1.1
+libclang==16.0.6

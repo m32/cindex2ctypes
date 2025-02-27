@@ -13,23 +13,29 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M",
 )
 
+#clang.cindex.Config.set_library_file('libclang-16.so')
+
 class CTEnum:
     def __init__(self, name):
         self.name = name
         self.children = []
+
     def add(self, name, value):
         elem = (name, value)
         self.children.append(elem)
+
     def write(self, fp):
         fp.write(f"""
 class {self.name}(c_int):
 """)
-        self.writechildren()
+        self.writechildren(fp)
+
     def writechildren(self, fp):
         for name, value in self.children:
             fp.write(f"""\
     {name} = {value}
 """)
+
 
 class CTUnionStruct:
     def __init__(self, name, align, size):
@@ -70,29 +76,40 @@ class {self.name}({base}):
 assert sizeof({self.name}) == {self.size}
 """)
 
+
 class CTUnion(CTUnionStruct):
-    def write(self, fp):
+    def write(self, fp): # pylint: disable=arguments-differ
         super().write(fp, "Union")
 
+
 class CTStructure(CTUnionStruct):
-    def write(self, fp):
+    def write(self, fp): # pylint: disable=arguments-differ
         super().write(fp, "Structure")
 
+
 class CTFunction:
-    def __init__(self, name, type, argtypes, argnames):
+    def __init__(self, name, ftype, argtypes, argnames):
         self.name = name
-        self.type = type
+        self.ftype = ftype
         self.argtypes = argtypes
         self.argnames = argnames
 
     def write(self, fp):
         fp.write(f"""\
-        self.{self.name} = CFUNCTYPE({self.type}{self.argtypes})(("{self.name}", hdll))
+        self.{self.name} = CFUNCTYPE({self.ftype}{self.argtypes})(("{self.name}", self.hdll))
 """)
-        if 0:
-            print("@CFUNCTYPE(%s%s)"%(resulttype, argtypes))
-            print("def %s(%s):"%(funcname, argnames))
-            print("    %s._api_(%s)"%(funcname, argnames))
+    def decorated(self, fp):
+        fp.write(f"""
+        @cdecl({self.ftype}{self.argtypes})
+        def {self.name}({self.argnames}):
+            return {self.name}._api_({self.argnames})
+""")
+
+    def decorated_def(self, fp):
+        fp.write(f"""\
+        self.{self.name} = {self.name}
+""")
+
 
 class CTTypedef:
     def __init__(self, name, value):
@@ -105,72 +122,6 @@ class CTTypedef:
 {self.name} = {self.value}
 """)
 
-def main():
-    with open(f"{sys.argv[1]}.json", "rt") as fp:
-        config = json.load(fp)
-    cls = Clang2ctypes()
-    cls.parse_file(config)
-    if cls.errors or cls.fatals:
-        return
-    cls.visitor()
-    with open(f"{config['filename']}.py", "wt") as fp:
-        fp.write("""\
-from ctypes import (
-    CDLL, CFUNCTYPE, POINTER,
-    Union, Structure, sizeof,
-    c_size_t, c_int,
-    c_int8, c_uint8,
-    c_int16, c_uint16,
-    c_int32, c_uint32,
-    c_int64, c_uint64,
-    c_int64, c_uint64,
-    c_float, c_double
-)
-
-int8_t = c_int8
-int16_t = c_int16
-int32_t = c_int32
-int64_t = c_int64
-uint8_t = c_uint8
-uint16_t = c_uint16
-uint32_t = c_uint32
-uint64_t = c_uint64
-
-size_t = c_size_t
-""")
-        fp.write("\n")
-        noenumclass = config.get("noenumclass", False)
-        if noenumclass:
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    fp.write(f"""\
-{elem.name} = c_int32
-""")
-            fp.write("""
-if 1:
-""")
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    fp.write(f"""\
-    # {elem.name}
-""")
-                    elem.writechildren(fp)
-        else:
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    elem.write(fp)
-
-        for elem in cls.elements:
-            if not isinstance(elem, CTFunction) and not isinstance(elem, CTEnum):
-                elem.write(fp)
-        fp.write(f"""
-class {config['classname']}:
-    def __init__(self, path):
-        hdll = self.hdll = CDLL(path)
-""")
-        for elem in cls.elements:
-            if isinstance(elem, CTFunction):
-                elem.write(fp)
 
 severity2text = {
     Diagnostic.Ignored: "",
@@ -179,6 +130,7 @@ severity2text = {
     Diagnostic.Error: "error",
     Diagnostic.Fatal: "fatal",
 }
+
 
 class Clang2ctypes:
     def __init__(self):
@@ -209,7 +161,7 @@ class Clang2ctypes:
             elif diag.severity == Diagnostic.Fatal:
                 self.fatals += 1
 
-            logger.debug("%s:%d,%d: %s: %s" % (diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling))
+            logger.debug("%s:%d,%d: %s: %s", diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling)
 
     def parse_buffer(self, config, buf):
         self.config = config
@@ -227,10 +179,12 @@ class Clang2ctypes:
             elif diag.severity == Diagnostic.Fatal:
                 self.fatals += 1
 
-            logger.debug("%s:%d,%d: %s: %s" % (diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling))
+            logger.debug("%s:%d,%d: %s: %s", diag.location.file, diag.location.line, diag.location.column, severity2text.get(diag.severity), diag.spelling)
 
     def debugCursor(self, cursor, n=1):
-        logger.debug('%scursor: spelling: %s kind:%s type.kind:%s', ' '*n,
+        # pylint: disable=unreachable
+        logger.debug('%scursor: spelling: %s kind:%s type.kind:%s',
+            ' '*n,
             cursor.spelling, 
             cursor.kind.name,
             cursor.type.kind.name)
@@ -252,7 +206,7 @@ class Clang2ctypes:
     def getName(self, elem):
         field_name = elem.spelling
         if field_name.find('(') > 0:
-            field_name = 'unnamed_%s'%elem.hash
+            field_name = f'unnamed_{elem.hash}'
         return field_name
 
     def visitor(self, cursor=None):
@@ -272,16 +226,16 @@ class Clang2ctypes:
             # passing the current children element.
             kind_name = str(children.kind)
             element = kind_name[kind_name.find(".")+1:]
-            method_name = "visit_%s" % element
+            method_name = f"visit_{element}"
             func = getattr(self, method_name, None)
             try:
                 if func and func(children):
                     continue
-            except:
+            except Exception as exc: # pylint: disable=broad-except
                 filename = 'unknown'
                 if children.location.file and children.location.file.name:
                     filename = children.location.file.name
-                logger.exception('unhandled in %s', filename)
+                logger.exception('unhandled in %s', filename, exc_info=exc)
                 self.debugCursor(children)
                 continue
             # Same as before but we pass to the member any literal expression.
@@ -313,7 +267,7 @@ class Clang2ctypes:
             ti = t.get_pointee().get_canonical()
             if ti.kind == TypeKind.RECORD:
                 # struct/union
-                return "POINTER(%s)"%self.type2ctypes(ti)
+                return f"POINTER({self.type2ctypes(ti)})"
             elif ti.kind == TypeKind.FUNCTIONPROTO:
                 #function
                 argtypes = []
@@ -322,17 +276,17 @@ class Clang2ctypes:
                 argtypes = ", ".join(argtypes)
                 if argtypes:
                     argtypes = ", "+argtypes
-                return "CFUNCTYPE(%s%s)"%(self.type2ctypes(ti.get_result()), argtypes)
+                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())}{argtypes})"
             elif ti.kind == TypeKind.FUNCTIONNOPROTO:
-                return "CFUNCTYPE(%s)"%(self.type2ctypes(ti.get_result()))
+                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())})"
             # simple type
-            return "POINTER(%s)"%self.type2ctypes(ti)
+            return f"POINTER({self.type2ctypes(ti)})"
         elif t.kind == TypeKind.CONSTANTARRAY:
             ti = t.get_array_element_type()
             if ti.kind == TypeKind.POINTER:
                 tti = ti.get_pointee().get_canonical()
-                return "POINTER(%s)*%s"%(self.type2ctypes(tti), t.get_array_size())
-            return "%s*%s"%(self.type2ctypes(ti), t.get_array_size())
+                return f"POINTER({self.type2ctypes(tti)})*{t.get_array_size()}"
+            return f"{self.type2ctypes(ti)}*{t.get_array_size()}"
         match t.get_canonical().kind:
             case TypeKind.CHAR_S:
                 return "c_int8"
@@ -397,7 +351,7 @@ class Clang2ctypes:
     def visit_UNION_DECL(self, cursor):
         field_name = cursor.spelling
         if field_name.find('(') > 0:
-            field_name = 'unnamed_%s'%cursor.hash
+            field_name = f'unnamed_{cursor.hash}'
         elem = CTUnion(field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
@@ -409,7 +363,7 @@ class Clang2ctypes:
     def visit_STRUCT_DECL(self, cursor):
         field_name = cursor.spelling
         if field_name.find('(') > 0:
-            field_name = 'unnamed_%s'%cursor.hash
+            field_name = f'unnamed_{cursor.hash}'
         elem = CTStructure(field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
@@ -419,6 +373,7 @@ class Clang2ctypes:
         return True
 
     def visit_MACRO_DEFINITION(self, cursor):
+        # pylint: disable=unreachable
         return True
         self.debugCursor(cursor)
         def slc(e):
@@ -434,6 +389,7 @@ class Clang2ctypes:
         return False
 
     def visit_MACRO_INSTANTIATION(self, cursor):
+        # pylint: disable=unreachable
         return True
         self.debugCursor(cursor)
         def slc(e):
@@ -449,10 +405,14 @@ class Clang2ctypes:
         return False
 
     def visit_VAR_DECL(self, cursor):
+        # pylint: disable=unreachable
         return True
+        self.debugCursor(cursor)
 
     def visit_TRANSLATION_UNIT(self, cursor):
+        # pylint: disable=unreachable
         return False
+        self.debugCursor(cursor)
 
     def visit_FUNCTION_DECL(self, cursor):
         argnames = []
@@ -490,5 +450,90 @@ class Clang2ctypes:
         elem = CTTypedef(field_name, td)
         self.elements.append(elem)
         return True
+
+def main():
+    with open(f"{sys.argv[1]}.json", "rt", encoding="utf8") as fp:
+        config = json.load(fp)
+    cls = Clang2ctypes()
+    cls.parse_file(config)
+    if cls.errors or cls.fatals:
+        return
+    cls.visitor()
+    with open(f"{config['filename']}.py", "wt", encoding="utf8") as fp:
+        fp.write("""\
+from ctypes import (
+    CDLL, CFUNCTYPE, POINTER,
+    Union, Structure, sizeof,
+    c_size_t, c_int,
+    c_int8, c_uint8,
+    c_int16, c_uint16,
+    c_int32, c_uint32,
+    c_int64, c_uint64,
+    c_int64, c_uint64,
+    c_float, c_double
+)
+
+int8_t = c_int8
+int16_t = c_int16
+int32_t = c_int32
+int64_t = c_int64
+uint8_t = c_uint8
+uint16_t = c_uint16
+uint32_t = c_uint32
+uint64_t = c_uint64
+
+size_t = c_size_t
+""")
+        fp.write("\n")
+        noenumclass = config.get("noenumclass", False)
+        if noenumclass:
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    fp.write(f"""\
+{elem.name} = c_int32
+""")
+            fp.write("""
+if 1:
+""")
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    fp.write(f"""\
+    # {elem.name}
+""")
+                    elem.writechildren(fp)
+        else:
+            for elem in cls.elements:
+                if isinstance(elem, CTEnum):
+                    elem.write(fp)
+
+        for elem in cls.elements:
+            if not isinstance(elem, CTFunction) and not isinstance(elem, CTEnum):
+                elem.write(fp)
+        fp.write(f"""
+class {config['classname']}:
+    def __init__(self, path):
+        self.hdll = CDLL(path)
+""")
+        functions_decorated = config.get("functions_decorated", False)
+        if functions_decorated:
+            fp.write("""
+        def cdecl(restype, *argtypes):
+            def decorate(func):
+                api = CFUNCTYPE(restype, *argtypes)((func.__name__, self.hdll))
+                func._api_ = api
+                return func
+            return decorate
+""")
+            for elem in cls.elements:
+                if isinstance(elem, CTFunction):
+                    elem.decorated(fp)
+            fp.write("\n")
+            for elem in cls.elements:
+                if isinstance(elem, CTFunction):
+                    elem.decorated_def(fp)
+        else:
+            for elem in cls.elements:
+                if isinstance(elem, CTFunction):
+                    elem.write(fp)
 
 main()

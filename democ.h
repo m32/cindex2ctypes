@@ -4,7 +4,7 @@
 
 typedef int (*cproc)(int a, int b);
 
-union Unia {
+union TUnion {
     char c1;
     unsigned char c2;
     short s1;
