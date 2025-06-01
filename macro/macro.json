@@ -3,6 +3,8 @@
     "classname": "Demo",
     "parsesrc": "./macro.h",
     "parseargs": [
+        "-I/usr/include/clang/19/include",
+        "-I/usr/include"
     ],
     "parseinclude": [
         "./macro.h"

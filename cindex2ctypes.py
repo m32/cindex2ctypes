@@ -141,9 +141,9 @@ class Clang2ctypes:
         self.warnings = 0
         self.errors = 0
         self.fatals = 0
-        self.total_elements = 0
         self.elements = []
         self.config = None
+        self.macros = []
 
     def parse_file(self, config):
         self.config = config
@@ -219,8 +219,6 @@ class Clang2ctypes:
         for children in cursor.get_children():
             if not self.checkparseinclude(children):
                 continue
-
-            self.total_elements += 1
 
             # Check if a visit_EXPR_TYPE member exists in the given object and call it
             # passing the current children element.
@@ -372,26 +370,50 @@ class Clang2ctypes:
                 break
         return True
 
-    def visit_MACRO_DEFINITION(self, cursor):
-        # pylint: disable=unreachable
-        return True
-        self.debugCursor(cursor)
-        def slc(e):
-            return (e.file.name, e.line, e.column)
-        print(
-            'MACRO_DEFINITION', cursor.displayname, #cursor.spelling,
-            #cursor.data,
-            slc(cursor.extent.start), slc(cursor.extent.end)
-        )
-        tokens = list(cursor.get_tokens())
-        s = ' '.join([str(t.spelling) for t in tokens])
-        print(len(tokens), s)
+    def known_macro(self, name):
+        for m in self.macros:
+            if m[0] == name:
+                return True
         return False
+
+    def visit_MACRO_DEFINITION(self, cursor):
+        e = cursor.extent.start
+        if not e.file or e.file.name not in self.config["parseinclude"]:
+            return True
+        tokens = list(cursor.get_tokens())
+        s = [str(tokens[0].spelling)]
+        ok = True
+        for t in tokens[1:]:
+            if t.kind == TokenKind.IDENTIFIER:
+                if not self.known_macro(t.spelling):
+                    ok = False
+            elif not t.kind in (TokenKind.PUNCTUATION, TokenKind.LITERAL):
+                ok = False
+            ss = str(t.spelling)
+            if ss == 'NULL':
+                ss = 'None'
+            if t.kind == TokenKind.LITERAL:
+                if ss[-2:] == 'UL':
+                    ss = ss[:-2]
+                elif ss[-1] in 'UL':
+                    ss = ss[:-1]
+            s.append(ss)
+        if not ok:
+            logger.warning('unhandled macro spelling:%s kind:%s, tokens:%s', t.spelling, t.kind, s)
+            s[0] = '#'+s[0]
+        else:
+            s.insert(1, '=')
+            if len(s) == 2:
+                s.append('True')
+        self.macros.append((s[0], ' '.join(s)))
+        return True
 
     def visit_MACRO_INSTANTIATION(self, cursor):
         # pylint: disable=unreachable
         return True
-        self.debugCursor(cursor)
+        e = cursor.extent.start
+        if not e.file or e.file.name not in self.config["parseinclude"]:
+            return True
         def slc(e):
             return (e.file.name, e.line, e.column)
         print(
@@ -401,8 +423,8 @@ class Clang2ctypes:
         )
         tokens = list(cursor.get_tokens())
         s = ' '.join([str(t.spelling) for t in tokens])
-        print(len(tokens), s)
-        return False
+        print(s)
+        return True
 
     def visit_VAR_DECL(self, cursor):
         # pylint: disable=unreachable
@@ -485,6 +507,10 @@ uint64_t = c_uint64
 size_t = c_size_t
 """)
         fp.write("\n")
+        for name, value in cls.macros:
+            fp.write(f"{value}\n")
+        fp.write("\n")
+
         noenumclass = config.get("noenumclass", False)
         if noenumclass:
             for elem in cls.elements:
