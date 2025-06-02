@@ -1,3 +1,4 @@
+#!/usr/bin/env vpython3
 # inspired by http://eli.thegreenplace.net/2011/07/03/parsing-c-in-python-with-clang/
 
 import sys

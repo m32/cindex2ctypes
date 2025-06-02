@@ -12,13 +12,15 @@ The cindex2ctypes is a project to generate python bindings for C code using clan
 
 # Demonstration
 
+Run: `cd demo`
+
 Run: `gcc -fPIC -shared -o democ.so democ.c`
 
-Run: `python3 cindex2ctypes.py demo`
+Run: `../cindex2ctypes.sh demo`
 
 The binding code will be available in `demo.py` file.
 
-Run: `python3 demo-main.py`
+Run: `python3 main.py`
 
 Output:
 ```

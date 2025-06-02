@@ -8,5 +8,6 @@
     "parseargs": [
         "-DCRYPTOKI_GNU",
         "-I/usr/include"
-    ]
+    ],
+    "functions_decorated": true
 }

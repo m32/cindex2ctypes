@@ -1,1 +1,1 @@
-clang -Xclang -ast-dump -fsyntax-only democ.h
+clang-check -ast-dump $* --extra-arg="-fno-color-diagnostics" --

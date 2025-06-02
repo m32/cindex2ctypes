@@ -1,0 +1,13 @@
+{
+    "filename": "cpp",
+    "classname": "cpp",
+    "parsesrc": "c++.cpp",
+    "parseargs": [
+        "-std=c++17"
+    ],
+    "parseinclude": [
+        "./c++.h"
+    ],
+    "pybind11": true,
+    "pybindmodule": "demo"
+}

@@ -1,22 +1,33 @@
 #!/usr/bin/env vpython3
-import sys
-import json
 import logging
 import clang.cindex
 from clang.cindex import Diagnostic, CursorKind, TokenKind, TranslationUnit, TypeKind
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.DEBUG, 
-    format="{asctime} - {levelname} - {message}",
-    style="{",
-    datefmt="%Y-%m-%d %H:%M",
-)
 
 #clang.cindex.Config.set_library_file('libclang-16.so')
 
-class CTEnum:
-    def __init__(self, name):
+class CTBase(object):
+    def __init__(self, namespace):
+        self.namespace = "::".join(namespace)+"::" if namespace else ""
+
+class CTVar(CTBase):
+    def __init__(self, namespace, ctype, name):
+        super().__init__(namespace)
+        self.ctype = ctype
+        self.name = name
+
+    def write_cpp(self, fp):
+        fp.write(f"""\
+    m.def("{self.namespace}_{self.name}", []({self.ctype} value) {{
+        {self.namespace}{self.name} = value;
+    }});
+""")
+
+
+class CTEnum(CTBase):
+    def __init__(self, namespace, name):
+        super().__init__(namespace)
         self.name = name
         self.children = []
 
@@ -24,21 +35,31 @@ class CTEnum:
         elem = (name, value)
         self.children.append(elem)
 
-    def write(self, fp):
+    def write_py(self, fp):
         fp.write(f"""
 class {self.name}(c_int):
 """)
-        self.writechildren(fp)
-
-    def writechildren(self, fp):
         for name, value in self.children:
             fp.write(f"""\
     {name} = {value}
 """)
 
+    def write_cpp(self, fp):
+        fp.write(f"""
+    py::enum_<{self.namespace}{self.name}>(m, "{self.name}")
+""")
+        for name, value in self.children:
+            fp.write(f"""\
+        .value("{name}", {self.namespace}{self.name}::{name})
+""")
+        fp.write(f"""
+    ;
+""")
 
-class CTUnionStruct:
-    def __init__(self, name, align, size):
+
+class CTUnionStruct(CTBase):
+    def __init__(self, namespace, name, align, size):
+        super().__init__(namespace)
         self.name = name
         self.align = align
         self.size = size
@@ -49,7 +70,7 @@ class CTUnionStruct:
         elem = (name, value)
         self.children.append(elem)
 
-    def write(self, fp, base):
+    def write_py(self, fp, base):
         if not self.children:
             fp.write(f"""
 class {self.name}({base}):
@@ -76,33 +97,44 @@ class {self.name}({base}):
 assert sizeof({self.name}) == {self.size}
 """)
 
+    def write_cpp(self, fp):
+        pass
+
 
 class CTUnion(CTUnionStruct):
-    def write(self, fp): # pylint: disable=arguments-differ
-        super().write(fp, "Union")
+    def write_py(self, fp): # pylint: disable=arguments-differ
+        super().write_py(fp, "Union")
 
 
 class CTStructure(CTUnionStruct):
-    def write(self, fp): # pylint: disable=arguments-differ
-        super().write(fp, "Structure")
+    def write_py(self, fp): # pylint: disable=arguments-differ
+        super().write_py(fp, "Structure")
 
 
-class CTFunction:
-    def __init__(self, name, ftype, argtypes, argnames):
+class CTFunction(CTBase):
+    def __init__(self, namespace, name, result, argtypes, argnames):
+        super().__init__(namespace)
         self.name = name
-        self.ftype = ftype
+        self.result = result
         self.argtypes = argtypes
         self.argnames = argnames
 
-    def write(self, fp):
+    def write_py(self, fp):
+        argtypes = ", ".join(self.argtypes)
         fp.write(f"""\
-        self.{self.name} = CFUNCTYPE({self.ftype}{self.argtypes})(("{self.name}", self.hdll))
+        self.{self.name} = CFUNCTYPE({self.result}, {argtypes})(("{self.name}", self.hdll))
 """)
     def decorated(self, fp):
+        args = []
+        for i in range(len(self.argnames)):
+            args.append(f"{self.argnames[i]}: {self.argtypes[i]}")
+        args = ', '.join(args)
+        argtypes = ", ".join(self.argtypes)
+        argnames = ", ".join(self.argnames)
         fp.write(f"""
-        @cdecl({self.ftype}{self.argtypes})
-        def {self.name}({self.argnames}):
-            return {self.name}._api_({self.argnames})
+        @cdecl({self.result}, {argtypes})
+        def {self.name}({args}):
+            return {self.name}._api_({argnames})
 """)
 
     def decorated_def(self, fp):
@@ -111,17 +143,86 @@ class CTFunction:
 """)
 
 
-class CTTypedef:
-    def __init__(self, name, value):
+class CTTypedef(CTBase):
+    def __init__(self, namespace, name, value):
+        super().__init__(namespace)
         self.name = name
         self.value = value
 
     def write(self, fp):
         if self.name != self.value:
-            fp.write(f"""
+            fp.write(f"""\
 {self.name} = {self.value}
 """)
 
+
+class CTClass(CTBase):
+    def __init__(self, namespace, name):
+        super().__init__(namespace)
+        self.name = name
+        self.constructors = []
+        self.functions = []
+        self.variables = []
+
+    def Constructor(self, access, argtypes, argnames):
+        self.constructors.append((access, argtypes, argnames))
+
+    def Function(self, access, result, name, argtypes, argnames):
+        self.functions.append((access, result, name, argtypes, argnames))
+
+    def Variable(self, access, result, name):
+        self.variables.append((access, result, name))
+
+    def write_py(self, fp):
+        fp.write(f"""
+'''
+class {self.name}:
+""")                
+        for access, result, name in self.variables:
+            fp.write(f"""\
+    {name} : {result}
+""")                
+        for access, argtypes, argnames in self.constructors:
+            args = []
+            for i in range(len(argnames)):
+                args.append(f"{argnames[i]}: {argtypes[i]}")
+            args = ', '.join(args)
+            fp.write(f"""\
+    def __init__(self, {args}):
+""")                
+        for access, result, name, argtypes, argnames in self.functions:
+            args = []
+            for i in range(len(argnames)):
+                args.append(f"{argnames[i]}: {argtypes[i]}")
+            args = ', '.join(args)
+            fp.write(f"""\
+    def {name}(self, {args}): -> {result}
+""")                
+        fp.write(f"""
+'''
+""")
+
+    def write_cpp(self, fp):
+        fp.write(f"""\
+    py::class_<{self.namespace}{self.name}>(m, "{self.name}")
+""")                
+        for access, result, name in self.variables:
+            fp.write(f"""\
+        .def_readwrite("{name}", &{self.namespace}{self.name}::{name})
+""")
+        for access, argtypes, argnames in self.constructors:
+            args = ', '.join(argtypes)
+            fp.write(f"""\
+        .def(py::init<{args}>())
+""")
+        for access, result, name, argtypes, argnames in self.functions:
+            args = ', '.join(argtypes)
+            fp.write(f"""\
+        .def("{name}", &{self.namespace}{self.name}::{name})
+""")
+        fp.write(f"""\
+    ;
+""")
 
 severity2text = {
     Diagnostic.Ignored: "",
@@ -132,7 +233,7 @@ severity2text = {
 }
 
 
-class Clang2ctypes:
+class ClangParse:
     def __init__(self):
         self.index = None
         self.tu = None
@@ -144,6 +245,7 @@ class Clang2ctypes:
         self.elements = []
         self.config = None
         self.macros = []
+        self.namespace = []
 
     def parse_file(self, config):
         self.config = config
@@ -151,7 +253,13 @@ class Clang2ctypes:
         args = config["parseargs"]
         self.source_path = src
         self.index = clang.cindex.Index.create()
-        self.tu = self.index.parse(path=src, args=args, options=TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD|TranslationUnit.PARSE_SKIP_FUNCTION_BODIES)
+        self.tu = self.index.parse(
+            path=src,
+            args=args,
+            options=
+                TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD|
+                TranslationUnit.PARSE_SKIP_FUNCTION_BODIES
+        )
         self.diags = self.tu.diagnostics
         for diag in self.diags:
             if diag.severity == Diagnostic.Warning:
@@ -169,7 +277,11 @@ class Clang2ctypes:
         args = config["parseargs"]
         self.source_path = src
         self.index = clang.cindex.Index.create()
-        self.tu = self.index.parse(path=src, args=args, unsaved_files=[(src, buf)])
+        self.tu = self.index.parse(
+            path=src,
+            args=args,
+            unsaved_files=[(src, buf)]
+        )
         self.diags = self.tu.diagnostics
         for diag in self.diags:
             if diag.severity == Diagnostic.Warning:
@@ -216,45 +328,51 @@ class Clang2ctypes:
         if not self.checkparseinclude(cursor):
             return
 
-        for children in cursor.get_children():
-            if not self.checkparseinclude(children):
+        for child in cursor.get_children():
+            if not self.checkparseinclude(child):
                 continue
 
             # Check if a visit_EXPR_TYPE member exists in the given object and call it
-            # passing the current children element.
-            kind_name = str(children.kind)
+            # passing the current child element.
+            #print(child.kind)
+            kind_name = str(child.kind)
+            if child.kind == CursorKind.NAMESPACE:
+                self.namespace.append(child.spelling)
+            elif child.kind not in (CursorKind.MACRO_DEFINITION, CursorKind.MACRO_INSTANTIATION):
+                print(child.kind, cursor.spelling)
             element = kind_name[kind_name.find(".")+1:]
             method_name = f"visit_{element}"
             func = getattr(self, method_name, None)
             try:
-                if func and func(children):
-                    continue
+                if func:
+                    if func(child):
+                        if child.kind == CursorKind.NAMESPACE:
+                            self.namespace.pop()
+                        continue
+                    else:
+                        print('unhandled:', child.kind)
+                elif child.kind != CursorKind.NAMESPACE:
+                    print('no handler for:', child.kind)
             except Exception as exc: # pylint: disable=broad-except
                 filename = 'unknown'
-                if children.location.file and children.location.file.name:
-                    filename = children.location.file.name
+                if child.location.file and child.location.file.name:
+                    filename = child.location.file.name
                 logger.exception('unhandled in %s', filename, exc_info=exc)
-                self.debugCursor(children)
+                self.debugCursor(child)
+                if child.kind == CursorKind.NAMESPACE:
+                    self.namespace.pop()
                 continue
             # Same as before but we pass to the member any literal expression.
             #method_name = "visit_LITERAL"
-            #if children.kind >= CursorKind.INTEGER_LITERAL and children.kind <= CursorKind.STRING_LITERAL:
+            #if child.kind >= CursorKind.INTEGER_LITERAL and child.kind <= CursorKind.STRING_LITERAL:
             #    func = getattr(obj, method_name, None)
-            #    if func and func(children):
+            #    if func and func(child):
             #        continue
-
-            self.visitor(cursor=children)
-
-    def visit_ENUM_DECL(self, cursor):
-        elem = CTEnum(cursor.spelling)
-        for cc in cursor.get_children():
-            if cc.kind == CursorKind.ENUM_CONSTANT_DECL:
-                elem.add(cc.displayname, cc.enum_value)
-            else:
-                print("enum?", cc.displayname, cc.kind, "=", cc.enum_value)
-                assert False
-        self.elements.append(elem)
-        return True
+            try:
+                self.visitor(cursor=child)
+            finally:
+                if child.kind == CursorKind.NAMESPACE:
+                    self.namespace.pop()
 
     def type2ctypes(self, t):
         if t.kind == TypeKind.ELABORATED:
@@ -269,12 +387,12 @@ class Clang2ctypes:
             elif ti.kind == TypeKind.FUNCTIONPROTO:
                 #function
                 argtypes = []
+                argnames = []
                 for arg in ti.argument_types():
                     argtypes.append(self.type2ctypes(arg))
+                    argnames.append(arg.spelling)
                 argtypes = ", ".join(argtypes)
-                if argtypes:
-                    argtypes = ", "+argtypes
-                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())}{argtypes})"
+                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())}, {argtypes})"
             elif ti.kind == TypeKind.FUNCTIONNOPROTO:
                 return f"CFUNCTYPE({self.type2ctypes(ti.get_result())})"
             # simple type
@@ -346,11 +464,27 @@ class Clang2ctypes:
                 elem.add(field_name, self.type2ctypes(t))
         self.elements.append(elem)
 
+    def visit_VAR_DECL(self, cursor):
+        elem = CTVar(self.namespace, self.type2ctypes(cursor.type), cursor.spelling)
+        self.elements.append(elem)
+        return True
+
+    def visit_ENUM_DECL(self, cursor):
+        elem = CTEnum(self.namespace, cursor.spelling)
+        for cc in cursor.get_children():
+            if cc.kind == CursorKind.ENUM_CONSTANT_DECL:
+                elem.add(cc.displayname, cc.enum_value)
+            else:
+                print("enum?", cc.displayname, cc.kind, "=", cc.enum_value)
+                assert False
+        self.elements.append(elem)
+        return True
+
     def visit_UNION_DECL(self, cursor):
         field_name = cursor.spelling
         if field_name.find('(') > 0:
             field_name = f'unnamed_{cursor.hash}'
-        elem = CTUnion(field_name, cursor.type.get_align(), cursor.type.get_size())
+        elem = CTUnion(self.namespace, field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
             if isinstance(elem, CTUnion) and self.elements[i].name == elem.name:
@@ -362,7 +496,7 @@ class Clang2ctypes:
         field_name = cursor.spelling
         if field_name.find('(') > 0:
             field_name = f'unnamed_{cursor.hash}'
-        elem = CTStructure(field_name, cursor.type.get_align(), cursor.type.get_size())
+        elem = CTStructure(self.namespace, field_name, cursor.type.get_align(), cursor.type.get_size())
         self.UnionStruct(elem, cursor)
         for i in range(len(self.elements)-1):
             if isinstance(elem, CTStructure) and self.elements[i].name == elem.name:
@@ -426,11 +560,6 @@ class Clang2ctypes:
         print(s)
         return True
 
-    def visit_VAR_DECL(self, cursor):
-        # pylint: disable=unreachable
-        return True
-        self.debugCursor(cursor)
-
     def visit_TRANSLATION_UNIT(self, cursor):
         # pylint: disable=unreachable
         return False
@@ -442,12 +571,9 @@ class Clang2ctypes:
         for arg in cursor.get_arguments():
             argtypes.append(self.type2ctypes(arg.type))
             argnames.append(arg.spelling)
-        argtypes = ", ".join(argtypes)
-        argnames = ", ".join(argnames)
-        if argtypes:
-            argtypes = ", "+argtypes
         result = cursor.result_type.get_canonical()
         elem = CTFunction(
+            self.namespace, 
             cursor.spelling,
             self.type2ctypes(result),
             argtypes,
@@ -469,97 +595,44 @@ class Clang2ctypes:
             td = self.type2ctypes(ti)
         else:
             td = self.type2ctypes(t)
-        elem = CTTypedef(field_name, td)
+        elem = CTTypedef(self.namespace, field_name, td)
         self.elements.append(elem)
         return True
 
-def main():
-    with open(f"{sys.argv[1]}.json", "rt", encoding="utf8") as fp:
-        config = json.load(fp)
-    cls = Clang2ctypes()
-    cls.parse_file(config)
-    if cls.errors or cls.fatals:
-        return
-    cls.visitor()
-    with open(f"{config['filename']}.py", "wt", encoding="utf8") as fp:
-        fp.write("""\
-from ctypes import (
-    CDLL, CFUNCTYPE, POINTER,
-    Union, Structure, sizeof,
-    c_size_t, c_int,
-    c_int8, c_uint8,
-    c_int16, c_uint16,
-    c_int32, c_uint32,
-    c_int64, c_uint64,
-    c_int64, c_uint64,
-    c_float, c_double
-)
+    def visit_CLASS_DECL(self, cursor):
+        elem = CTClass(self.namespace, cursor.spelling)
+        for child in cursor.get_children():
+            if child.kind == CursorKind.CONSTRUCTOR:
+                argnames = []
+                argtypes = []
+                for arg in child.get_children():
+                    argtypes.append(self.type2ctypes(arg.type))
+                    argnames.append(arg.spelling)
+                elem.Constructor(child.access_specifier, argtypes, argnames)
+            elif child.kind == CursorKind.FIELD_DECL:
+                field_name = child.spelling
+                t = child.type
+                if t.kind == TypeKind.POINTER:
+                    ti = t.get_pointee().get_canonical()
+                    if ti.kind == TypeKind.RECORD:
+                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                    elif ti.kind == TypeKind.FUNCTIONPROTO:
+                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                        #t.spelling
+                    else:
+                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                elif t.kind == TypeKind.CONSTANTARRAY:
+                    elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                else:
+                    elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+            elif child.kind == CursorKind.CXX_METHOD:
+                argnames = []
+                argtypes = []
+                for arg in child.get_children():
+                    argtypes.append(self.type2ctypes(arg.type))
+                    argnames.append(arg.spelling)
+                result = self.type2ctypes(child.result_type.get_canonical())
+                elem.Function(child.access_specifier, result, child.spelling, argtypes, argnames)
+        self.elements.append(elem)
 
-int8_t = c_int8
-int16_t = c_int16
-int32_t = c_int32
-int64_t = c_int64
-uint8_t = c_uint8
-uint16_t = c_uint16
-uint32_t = c_uint32
-uint64_t = c_uint64
-
-size_t = c_size_t
-""")
-        fp.write("\n")
-        for name, value in cls.macros:
-            fp.write(f"{value}\n")
-        fp.write("\n")
-
-        noenumclass = config.get("noenumclass", False)
-        if noenumclass:
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    fp.write(f"""\
-{elem.name} = c_int32
-""")
-            fp.write("""
-if 1:
-""")
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    fp.write(f"""\
-    # {elem.name}
-""")
-                    elem.writechildren(fp)
-        else:
-            for elem in cls.elements:
-                if isinstance(elem, CTEnum):
-                    elem.write(fp)
-
-        for elem in cls.elements:
-            if not isinstance(elem, CTFunction) and not isinstance(elem, CTEnum):
-                elem.write(fp)
-        fp.write(f"""
-class {config['classname']}:
-    def __init__(self, path):
-        self.hdll = CDLL(path)
-""")
-        functions_decorated = config.get("functions_decorated", False)
-        if functions_decorated:
-            fp.write("""
-        def cdecl(restype, *argtypes):
-            def decorate(func):
-                api = CFUNCTYPE(restype, *argtypes)((func.__name__, self.hdll))
-                func._api_ = api
-                return func
-            return decorate
-""")
-            for elem in cls.elements:
-                if isinstance(elem, CTFunction):
-                    elem.decorated(fp)
-            fp.write("\n")
-            for elem in cls.elements:
-                if isinstance(elem, CTFunction):
-                    elem.decorated_def(fp)
-        else:
-            for elem in cls.elements:
-                if isinstance(elem, CTFunction):
-                    elem.write(fp)
-
-main()
+        return True
