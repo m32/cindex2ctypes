@@ -167,3 +167,5 @@ cython_debug/
 .vscode/
 pylintrc
 pybind11
+x-out-1
+x-out-2

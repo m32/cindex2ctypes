@@ -11,6 +11,146 @@ class CTBase(object):
     def __init__(self, namespace):
         self.namespace = "::".join(namespace)+"::" if namespace else ""
 
+    @staticmethod
+    def getName(elem):
+        field_name = elem.spelling
+        if field_name.find('(') > 0:
+            field_name = f'unnamed_{elem.hash}'
+        return field_name
+
+    @staticmethod
+    def ctype2ctypes(t):
+        if t.kind == TypeKind.ELABORATED:
+            return CTBase.getName(t.get_declaration())
+        if t.kind == TypeKind.RECORD:
+            return CTBase.getName(t.get_declaration())
+        if t.kind == TypeKind.POINTER:
+            ti = t.get_pointee().get_canonical()
+            if ti.kind == TypeKind.RECORD:
+                # struct/union
+                return f"POINTER({CTBase.ctype2ctypes(ti)})"
+            elif ti.kind == TypeKind.FUNCTIONPROTO:
+                #function
+                argtypes = []
+                argnames = []
+                for arg in ti.argument_types():
+                    argtypes.append(CTBase.ctype2ctypes(arg))
+                    argnames.append(arg.spelling)
+                argtypes = ", ".join(argtypes)
+                return f"CFUNCTYPE({CTBase.ctype2ctypes(ti.get_result())}, {argtypes})"
+            elif ti.kind == TypeKind.FUNCTIONNOPROTO:
+                return f"CFUNCTYPE({CTBase.ctype2ctypes(ti.get_result())})"
+            # simple type
+            return f"POINTER({CTBase.ctype2ctypes(ti)})"
+        elif t.kind == TypeKind.CONSTANTARRAY:
+            ti = t.get_array_element_type()
+            if ti.kind == TypeKind.POINTER:
+                tti = ti.get_pointee().get_canonical()
+                return f"POINTER({CTBase.ctype2ctypes(tti)})*{t.get_array_size()}"
+            return f"{CTBase.ctype2ctypes(ti)}*{t.get_array_size()}"
+        match t.get_canonical().kind:
+            case TypeKind.CHAR_S:
+                return "c_int8"
+            case TypeKind.UCHAR:
+                return "c_uint8"
+            case TypeKind.SCHAR:
+                return "c_int8"
+            case TypeKind.SHORT:
+                return "c_int16"
+            case TypeKind.USHORT:
+                return "c_uint16"
+            case TypeKind.INT:
+                return "c_int32"
+            case TypeKind.UINT:
+                return "c_uint32"
+            case TypeKind.LONG:
+                return "c_int64"
+            case TypeKind.ULONG:
+                return "c_uint64"
+            case TypeKind.LONGLONG:
+                return "c_int64"
+            case TypeKind.ULONGLONG:
+                return "c_uint64"
+            case TypeKind.FLOAT:
+                return "c_float"
+            case TypeKind.DOUBLE:
+                return "c_double"
+            case TypeKind.VOID:
+                return "None"
+            case TypeKind.ENUM:
+                return 'c_int32'
+            case TypeKind.BOOL:
+                return 'bool'
+        print("unhandled ctype2ctypes", t.get_canonical().kind)
+        assert False
+
+    @staticmethod
+    def ctype2ctype(t):
+        if t.kind == TypeKind.ELABORATED:
+            return CTBase.getName(t.get_declaration())
+        if t.kind == TypeKind.RECORD:
+            return CTBase.getName(t.get_declaration())
+        if t.kind == TypeKind.POINTER:
+            ti = t.get_pointee().get_canonical()
+            if ti.kind == TypeKind.RECORD:
+                # struct/union
+                return f"{CTBase.ctype2ctype(ti)} *"
+            elif ti.kind == TypeKind.FUNCTIONPROTO:
+                #function
+                argtypes = []
+                argnames = []
+                for arg in ti.argument_types():
+                    argtypes.append(CTBase.ctype2ctype(arg))
+                    argnames.append(arg.spelling)
+                argtypes = ", ".join(argtypes)
+                return f"CFUNCTYPE({CTBase.ctype2ctype(ti.get_result())}, {argtypes})"
+            elif ti.kind == TypeKind.FUNCTIONNOPROTO:
+                return f"CFUNCTYPE({CTBase.ctype2ctype(ti.get_result())})"
+            # simple type
+            return f"POINTER({CTBase.ctype2ctype(ti)})"
+        elif t.kind == TypeKind.CONSTANTARRAY:
+            ti = t.get_array_element_type()
+            if ti.kind == TypeKind.POINTER:
+                tti = ti.get_pointee().get_canonical()
+                return f"POINTER({CTBase.ctype2ctype(tti)})*{t.get_array_size()}"
+            return f"{CTBase.ctype2ctype(ti)}*{t.get_array_size()}"
+        match t.get_canonical().kind:
+            case TypeKind.CHAR_S:
+                return "char"
+            case TypeKind.UCHAR:
+                return "unsigned char"
+            case TypeKind.SCHAR:
+                return "signed char"
+            case TypeKind.SHORT:
+                return "short"
+            case TypeKind.USHORT:
+                return "unsigned short"
+            case TypeKind.INT:
+                return "int"
+            case TypeKind.UINT:
+                return "unsigned int"
+            case TypeKind.LONG:
+                return "long"
+            case TypeKind.ULONG:
+                return "unsigned long"
+            case TypeKind.LONGLONG:
+                return "longlong"
+            case TypeKind.ULONGLONG:
+                return "unsigned longlong"
+            case TypeKind.FLOAT:
+                return "float"
+            case TypeKind.DOUBLE:
+                return "double"
+            case TypeKind.VOID:
+                return "void"
+            case TypeKind.ENUM:
+                return 'int'
+            case TypeKind.BOOL:
+                return 'bool'
+        print("unhandled ctype2ctype", t.get_canonical().kind)
+        assert False
+
+
 class CTVar(CTBase):
     def __init__(self, namespace, ctype, name):
         super().__init__(namespace)
@@ -18,8 +158,9 @@ class CTVar(CTBase):
         self.name = name
 
     def write_cpp(self, fp):
+        ctype = CTBase.ctype2ctype(self.ctype)
         fp.write(f"""\
-    m.def("{self.namespace}_{self.name}", []({self.ctype} value) {{
+    m.def("{self.namespace}_{self.name}", []({ctype} value) {{
         {self.namespace}{self.name} = value;
     }});
 """)
@@ -35,14 +176,17 @@ class CTEnum(CTBase):
         elem = (name, value)
         self.children.append(elem)
 
-    def write_py(self, fp):
-        fp.write(f"""
-class {self.name}(c_int):
-""")
+    def write_py_children(self, fp):
         for name, value in self.children:
             fp.write(f"""\
     {name} = {value}
 """)
+
+    def write_py(self, fp):
+        fp.write(f"""
+class {self.name}(c_int):
+""")
+        self.write_py_children(fp)
 
     def write_cpp(self, fp):
         fp.write(f"""
@@ -66,9 +210,8 @@ class CTUnionStruct(CTBase):
         self.children = []
         self.hasforward = False
 
-    def add(self, name, value):
-        elem = (name, value)
-        self.children.append(elem)
+    def add(self, ctype, name):
+        self.children.append((ctype, name))
 
     def write_py(self, fp, base):
         if not self.children:
@@ -88,9 +231,10 @@ class {self.name}({base}):
     _pack_ = {self.align}
     _fields_ = [
 """)
-        for name, value in self.children:
+        for ctype, name  in self.children:
+            ctypestype = CTBase.ctype2ctypes(ctype)
             fp.write(f"""\
-        ("{name}", {value}),
+        ("{name}", {ctypestype}),
 """)
         fp.write(f"""\
     ]
@@ -98,7 +242,26 @@ assert sizeof({self.name}) == {self.size}
 """)
 
     def write_cpp(self, fp):
-        pass
+        fp.write(f"""\
+    py::class_<{self.namespace}{self.name}>(m, "{self.name}")
+""")                
+        for ctype, name in self.children:
+            fp.write(f"""\
+        .def_readwrite("{name}", &{self.namespace}{self.name}::{name})
+""")
+        for access, argtypes, argnames in self.constructors:
+            argtypes = [ CTBase.ctype2ctype(t) for t in argtypes ]
+            argtypes = ', '.join(argtypes)
+            fp.write(f"""\
+        .def(py::init<{argtypes}>())
+""")
+        for access, result, name, argtypes, argnames in self.functions:
+            fp.write(f"""\
+        .def("{name}", &{self.namespace}{self.name}::{name})
+""")
+        fp.write(f"""\
+    ;
+""")
 
 
 class CTUnion(CTUnionStruct):
@@ -107,8 +270,19 @@ class CTUnion(CTUnionStruct):
 
 
 class CTStructure(CTUnionStruct):
+    def __init__(self, namespace, name, align, size):
+        super().__init__(namespace, name, align, size)
+        self.constructors = []
+        self.functions = []
+
     def write_py(self, fp): # pylint: disable=arguments-differ
         super().write_py(fp, "Structure")
+
+    def Constructor(self, access, argtypes, argnames):
+        self.constructors.append((access, argtypes, argnames))
+
+    def Function(self, access, result, name, argtypes, argnames):
+        self.functions.append((access, result, name, argtypes, argnames))
 
 
 class CTFunction(CTBase):
@@ -120,19 +294,23 @@ class CTFunction(CTBase):
         self.argnames = argnames
 
     def write_py(self, fp):
-        argtypes = ", ".join(self.argtypes)
+        result = CTBase.ctype2ctypes(self.result)
+        argtypes = [ CTBase.ctype2ctypes(t) for t in self.argtypes]
+        argtypes = ", ".join(argtypes)
         fp.write(f"""\
-        self.{self.name} = CFUNCTYPE({self.result}, {argtypes})(("{self.name}", self.hdll))
+        self.{self.name} = CFUNCTYPE({result}, {argtypes})(("{self.name}", self.hdll))
 """)
     def decorated(self, fp):
+        result = CTBase.ctype2ctypes(self.result)
+        argtypes = [ CTBase.ctype2ctypes(t) for t in self.argtypes]
         args = []
         for i in range(len(self.argnames)):
-            args.append(f"{self.argnames[i]}: {self.argtypes[i]}")
+            args.append(f"{self.argnames[i]}: {argtypes[i]}")
         args = ', '.join(args)
-        argtypes = ", ".join(self.argtypes)
+        argtypes = ", ".join(argtypes)
         argnames = ", ".join(self.argnames)
         fp.write(f"""
-        @cdecl({self.result}, {argtypes})
+        @cdecl({result}, {argtypes})
         def {self.name}({args}):
             return {self.name}._api_({argnames})
 """)
@@ -144,15 +322,16 @@ class CTFunction(CTBase):
 
 
 class CTTypedef(CTBase):
-    def __init__(self, namespace, name, value):
+    def __init__(self, namespace, ctype, name):
         super().__init__(namespace)
+        self.ctype = ctype
         self.name = name
-        self.value = value
 
-    def write(self, fp):
-        if self.name != self.value:
+    def write_py(self, fp):
+        if self.name != self.ctype:
+            ctype = CTBase.ctype2ctypes(self.ctype)
             fp.write(f"""\
-{self.name} = {self.value}
+{self.name} = {ctype}
 """)
 
 
@@ -211,12 +390,12 @@ class {self.name}:
         .def_readwrite("{name}", &{self.namespace}{self.name}::{name})
 """)
         for access, argtypes, argnames in self.constructors:
+            argtypes = [ CTBase.ctype2ctype(t) for t in argtypes ]
             args = ', '.join(argtypes)
             fp.write(f"""\
         .def(py::init<{args}>())
 """)
         for access, result, name, argtypes, argnames in self.functions:
-            args = ', '.join(argtypes)
             fp.write(f"""\
         .def("{name}", &{self.namespace}{self.name}::{name})
 """)
@@ -280,7 +459,10 @@ class ClangParse:
         self.tu = self.index.parse(
             path=src,
             args=args,
-            unsaved_files=[(src, buf)]
+            unsaved_files=[(src, buf)],
+            options=
+                TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD|
+                TranslationUnit.PARSE_SKIP_FUNCTION_BODIES
         )
         self.diags = self.tu.diagnostics
         for diag in self.diags:
@@ -315,12 +497,6 @@ class ClangParse:
             return False
         return True
 
-    def getName(self, elem):
-        field_name = elem.spelling
-        if field_name.find('(') > 0:
-            field_name = f'unnamed_{elem.hash}'
-        return field_name
-
     def visitor(self, cursor=None):
         if cursor is None:
             cursor = self.tu.cursor
@@ -339,7 +515,8 @@ class ClangParse:
             if child.kind == CursorKind.NAMESPACE:
                 self.namespace.append(child.spelling)
             elif child.kind not in (CursorKind.MACRO_DEFINITION, CursorKind.MACRO_INSTANTIATION):
-                print(child.kind, cursor.spelling)
+                #print(child.kind, cursor.spelling)
+                pass
             element = kind_name[kind_name.find(".")+1:]
             method_name = f"visit_{element}"
             func = getattr(self, method_name, None)
@@ -349,10 +526,11 @@ class ClangParse:
                         if child.kind == CursorKind.NAMESPACE:
                             self.namespace.pop()
                         continue
-                    else:
-                        print('unhandled:', child.kind)
+#                    else:
+#                        print('unhandled:', child.kind)
                 elif child.kind != CursorKind.NAMESPACE:
-                    print('no handler for:', child.kind)
+                    tokens = [t.spelling for t in child.get_tokens()]
+                    logger.error(f'No handler for: kind:{child.kind} tokens:{tokens}')
             except Exception as exc: # pylint: disable=broad-except
                 filename = 'unknown'
                 if child.location.file and child.location.file.name:
@@ -374,108 +552,76 @@ class ClangParse:
                 if child.kind == CursorKind.NAMESPACE:
                     self.namespace.pop()
 
-    def type2ctypes(self, t):
-        if t.kind == TypeKind.ELABORATED:
-            return self.getName(t.get_declaration())
-        if t.kind == TypeKind.RECORD:
-            return self.getName(t.get_declaration())
-        if t.kind == TypeKind.POINTER:
-            ti = t.get_pointee().get_canonical()
-            if ti.kind == TypeKind.RECORD:
-                # struct/union
-                return f"POINTER({self.type2ctypes(ti)})"
-            elif ti.kind == TypeKind.FUNCTIONPROTO:
-                #function
-                argtypes = []
-                argnames = []
-                for arg in ti.argument_types():
-                    argtypes.append(self.type2ctypes(arg))
-                    argnames.append(arg.spelling)
-                argtypes = ", ".join(argtypes)
-                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())}, {argtypes})"
-            elif ti.kind == TypeKind.FUNCTIONNOPROTO:
-                return f"CFUNCTYPE({self.type2ctypes(ti.get_result())})"
-            # simple type
-            return f"POINTER({self.type2ctypes(ti)})"
-        elif t.kind == TypeKind.CONSTANTARRAY:
-            ti = t.get_array_element_type()
-            if ti.kind == TypeKind.POINTER:
-                tti = ti.get_pointee().get_canonical()
-                return f"POINTER({self.type2ctypes(tti)})*{t.get_array_size()}"
-            return f"{self.type2ctypes(ti)}*{t.get_array_size()}"
-        match t.get_canonical().kind:
-            case TypeKind.CHAR_S:
-                return "c_int8"
-            case TypeKind.UCHAR:
-                return "c_uint8"
-            case TypeKind.SCHAR:
-                return "c_int8"
-            case TypeKind.SHORT:
-                return "c_int16"
-            case TypeKind.USHORT:
-                return "c_uint16"
-            case TypeKind.INT:
-                return "c_int32"
-            case TypeKind.UINT:
-                return "c_uint32"
-            case TypeKind.LONG:
-                return "c_int64"
-            case TypeKind.ULONG:
-                return "c_uint64"
-            case TypeKind.LONGLONG:
-                return "c_int64"
-            case TypeKind.ULONGLONG:
-                return "c_uint64"
-            case TypeKind.FLOAT:
-                return "c_float"
-            case TypeKind.DOUBLE:
-                return "c_double"
-            case TypeKind.VOID:
-                return "None"
-            case TypeKind.ENUM:
-                return 'c_int32'
-        print("unhandled type", t.get_canonical().kind)
-        assert False
-
     def UnionStruct(self, elem, cursor):
-        for cc in cursor.get_children():
-            if cc.kind == CursorKind.UNION_DECL:
-                #self.debugCursor(cc)
-                self.visit_UNION_DECL(cc)
+        for child in cursor.get_children():
+            if child.kind == CursorKind.UNION_DECL:
+                #self.debugCursor(child)
+                self.visit_UNION_DECL(child)
                 continue
-            elif cc.kind == CursorKind.STRUCT_DECL:
-                self.visit_STRUCT_DECL(cc)
+            elif child.kind == CursorKind.STRUCT_DECL:
+                self.visit_STRUCT_DECL(child)
                 continue
-            assert cc.kind == CursorKind.FIELD_DECL
-            field_name = cc.spelling
-            t = cc.type
+            if child.kind == CursorKind.CONSTRUCTOR:
+                argnames = []
+                argtypes = []
+                for arg in child.get_children():
+                    argtypes.append(arg.type)
+                    argnames.append(arg.spelling)
+                elem.Constructor(child.access_specifier, argtypes, argnames)
+                continue
+            elif child.kind == CursorKind.CXX_METHOD:
+                argnames = []
+                argtypes = []
+                for arg in child.get_children():
+                    argtypes.append(arg.type)
+                    argnames.append(arg.spelling)
+                result = child.result_type.get_canonical()
+                elem.Function(child.access_specifier, result, child.spelling, argtypes, argnames)
+                continue
+            if child.kind != CursorKind.FIELD_DECL:
+                tokens = [t.spelling for t in child.get_tokens()]
+                logger.error(F"Failed child.kind: {child.kind} != CursorKind.FIELD_DECL tokens: {tokens}")
+                self.debugCursor(child)
+                continue
+            field_name = child.spelling
+            t = child.type
             if t.kind == TypeKind.POINTER:
                 ti = t.get_pointee().get_canonical()
                 if ti.kind == TypeKind.RECORD:
-                    elem.add(field_name, self.type2ctypes(t))
+                    elem.add(t, field_name)
                 elif ti.kind == TypeKind.FUNCTIONPROTO:
-                    elem.add(field_name, self.type2ctypes(t))
+                    elem.add(t, field_name)
                     #t.spelling
                 else:
-                    elem.add(field_name, self.type2ctypes(t))
+                    elem.add(t, field_name)
             elif t.kind == TypeKind.CONSTANTARRAY:
-                elem.add(field_name, self.type2ctypes(t))
+                elem.add(t, field_name)
             else:
-                elem.add(field_name, self.type2ctypes(t))
+                elem.add(t, field_name)
         self.elements.append(elem)
 
+    def visit_n_o_p(self, cursor):
+        # pylint: disable=unreachable
+        return False
+        self.debugCursor(cursor)
+
+    visit_INCLUSION_DIRECTIVE = visit_n_o_p
+    visit_TRANSLATION_UNIT = visit_n_o_p
+
     def visit_VAR_DECL(self, cursor):
-        elem = CTVar(self.namespace, self.type2ctypes(cursor.type), cursor.spelling)
+        elem = CTVar(self.namespace, cursor.type, cursor.spelling)
         self.elements.append(elem)
         return True
 
     def visit_ENUM_DECL(self, cursor):
         elem = CTEnum(self.namespace, cursor.spelling)
-        for cc in cursor.get_children():
-            if cc.kind == CursorKind.ENUM_CONSTANT_DECL:
-                elem.add(cc.displayname, cc.enum_value)
+        for child in cursor.get_children():
+            if child.kind == CursorKind.ENUM_CONSTANT_DECL:
+                elem.add(child.displayname, child.enum_value)
             else:
-                print("enum?", cc.displayname, cc.kind, "=", cc.enum_value)
+                tokens = [t.spelling for t in child.get_tokens()]
+                logger.error(f"Failed enum: displayname:{child.displayname} kind:{child.kind} value:{child.enum_value} tokens:{tokens}")
+                self.debugCursor(child)
                 assert False
         self.elements.append(elem)
         return True
@@ -560,22 +706,16 @@ class ClangParse:
         print(s)
         return True
 
-    def visit_TRANSLATION_UNIT(self, cursor):
-        # pylint: disable=unreachable
-        return False
-        self.debugCursor(cursor)
-
     def visit_FUNCTION_DECL(self, cursor):
         argnames = []
         argtypes = []
         for arg in cursor.get_arguments():
-            argtypes.append(self.type2ctypes(arg.type))
+            argtypes.append(arg.type)
             argnames.append(arg.spelling)
-        result = cursor.result_type.get_canonical()
         elem = CTFunction(
             self.namespace, 
             cursor.spelling,
-            self.type2ctypes(result),
+            cursor.result_type.get_canonical(),
             argtypes,
             argnames,
         )
@@ -587,15 +727,14 @@ class ClangParse:
         t = cursor.type
         ti = t.get_canonical()
         if ti.kind == TypeKind.RECORD:
-            td = self.type2ctypes(ti)
+            pass
         elif ti.kind == TypeKind.POINTER:
             ti = t.get_canonical()
-            td = self.type2ctypes(ti)
         elif ti.kind == TypeKind.CONSTANTARRAY:
-            td = self.type2ctypes(ti)
+            pass
         else:
-            td = self.type2ctypes(t)
-        elem = CTTypedef(self.namespace, field_name, td)
+            ti = t
+        elem = CTTypedef(self.namespace, ti, field_name)
         self.elements.append(elem)
         return True
 
@@ -606,7 +745,7 @@ class ClangParse:
                 argnames = []
                 argtypes = []
                 for arg in child.get_children():
-                    argtypes.append(self.type2ctypes(arg.type))
+                    argtypes.append(arg.type)
                     argnames.append(arg.spelling)
                 elem.Constructor(child.access_specifier, argtypes, argnames)
             elif child.kind == CursorKind.FIELD_DECL:
@@ -615,24 +754,23 @@ class ClangParse:
                 if t.kind == TypeKind.POINTER:
                     ti = t.get_pointee().get_canonical()
                     if ti.kind == TypeKind.RECORD:
-                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                        elem.Variable(child.access_specifier, t, field_name)
                     elif ti.kind == TypeKind.FUNCTIONPROTO:
-                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                        elem.Variable(child.access_specifier, t, field_name)
                         #t.spelling
                     else:
-                        elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                        elem.Variable(child.access_specifier, t, field_name)
                 elif t.kind == TypeKind.CONSTANTARRAY:
-                    elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                    elem.Variable(child.access_specifier, t, field_name)
                 else:
-                    elem.Variable(child.access_specifier, self.type2ctypes(t), field_name)
+                    elem.Variable(child.access_specifier, t, field_name)
             elif child.kind == CursorKind.CXX_METHOD:
                 argnames = []
                 argtypes = []
                 for arg in child.get_children():
-                    argtypes.append(self.type2ctypes(arg.type))
+                    argtypes.append(arg.type)
                     argnames.append(arg.spelling)
-                result = self.type2ctypes(child.result_type.get_canonical())
-                elem.Function(child.access_specifier, result, child.spelling, argtypes, argnames)
+                elem.Function(child.access_specifier, child.result_type.get_canonical(), child.spelling, argtypes, argnames)
         self.elements.append(elem)
 
-        return True
+        return False

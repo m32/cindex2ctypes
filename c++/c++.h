@@ -1,5 +1,21 @@
 extern int debuglog;
 
+struct margins
+{
+	int	left;
+	int	right;
+	int top;
+	int bottom;
+
+	margins()
+	{
+		left = right = top = bottom = 0;
+	}
+
+	int width()		const	{ return left + right; }
+	int height()	const	{ return top + bottom; }
+};
+
 namespace ABC {
     enum Numbers {
         One,

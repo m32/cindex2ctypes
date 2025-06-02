@@ -52,7 +52,7 @@ if 1:
                     fp.write(f"""\
     # {elem.name}
 """)
-                    elem.writechildren(fp)
+                    elem.write_py_children(fp)
         else:
             for elem in parser.elements:
                 if isinstance(elem, CTEnum):
