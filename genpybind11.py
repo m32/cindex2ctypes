@@ -33,13 +33,17 @@ PYBIND11_MODULE({config["pybindmodule"]}, m) {{
         for elem in parser.elements:
             if isinstance(elem, CTEnum):
                 elem.write_cpp(fp)
+        for elem in parser.elements:
             if isinstance(elem, CTUnionStruct):
                 elem.write_cpp(fp)
-            elif isinstance(elem, CTTypedef):
+        for elem in parser.elements:
+            if isinstance(elem, CTTypedef):
                 elem.write_cpp(fp)
-            elif isinstance(elem, CTClass):
+        for elem in parser.elements:
+            if isinstance(elem, CTClass):
                 elem.write_cpp(fp)
-            elif isinstance(elem, CTVar):
+        for elem in parser.elements:
+            if isinstance(elem, CTVar):
                 elem.write_cpp(fp)
         fp.write(f"""\
 }}

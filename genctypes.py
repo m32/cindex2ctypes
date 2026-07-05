@@ -28,6 +28,10 @@ uint8_t = c_uint8
 uint16_t = c_uint16
 uint32_t = c_uint32
 uint64_t = c_uint64
+u_int8_t = c_uint8
+u_int16_t = c_uint16
+u_int32_t = c_uint32
+u_int64_t = c_uint64
 
 size_t = c_size_t
 """)
@@ -56,7 +60,7 @@ if 1:
         else:
             for elem in parser.elements:
                 if isinstance(elem, CTEnum):
-                    elem.write(fp)
+                    elem.write_py(fp)
 
         for elem in parser.elements:
             if isinstance(elem, CTUnionStruct):

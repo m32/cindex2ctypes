@@ -1,11 +1,12 @@
 #!/usr/bin/env vpython3
 import logging
+import clang
 import clang.cindex
 from clang.cindex import Diagnostic, CursorKind, TokenKind, TranslationUnit, TypeKind
 
 logger = logging.getLogger(__name__)
 
-#clang.cindex.Config.set_library_file('libclang-16.so')
+clang.cindex.Config.set_library_file('libclang-21.so')
 
 class CTBase(object):
     def __init__(self, namespace):
@@ -209,6 +210,8 @@ class CTUnionStruct(CTBase):
         self.size = size
         self.children = []
         self.hasforward = False
+        self.constructors = []
+        self.functions = []
 
     def add(self, ctype, name):
         self.children.append((ctype, name))
@@ -270,11 +273,6 @@ class CTUnion(CTUnionStruct):
 
 
 class CTStructure(CTUnionStruct):
-    def __init__(self, namespace, name, align, size):
-        super().__init__(namespace, name, align, size)
-        self.constructors = []
-        self.functions = []
-
     def write_py(self, fp): # pylint: disable=arguments-differ
         super().write_py(fp, "Structure")
 
@@ -328,6 +326,13 @@ class CTTypedef(CTBase):
         self.name = name
 
     def write_py(self, fp):
+        if self.name != self.ctype:
+            ctype = CTBase.ctype2ctypes(self.ctype)
+            fp.write(f"""\
+{self.name} = {ctype}
+""")
+
+    def write_cpp(self, fp):
         if self.name != self.ctype:
             ctype = CTBase.ctype2ctypes(self.ctype)
             fp.write(f"""\
@@ -774,3 +779,6 @@ class ClangParse:
         self.elements.append(elem)
 
         return False
+
+    def visit_TYPE_REF(self, cursor):
+        return True
